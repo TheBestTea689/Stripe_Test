@@ -81,32 +81,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Questa funzione viene chiamata automaticamente da Google reCAPTCHA quando l'utente supera il controllo anti-bot
+    // Questa funzione viene chiamata automaticamente da Google reCAPTCHA quando l'utente supera il controllo anti-bot
     window.onCaptchaSuccess = async function (token) {
         try {
             // Mostriamo un feedback visivo o lasciamo il caricamento
             errorMessageDiv.style.display = 'none';
 
             // 1. Chiamiamo il nostro server.js inviando il token del reCAPTCHA
-            const response = await fetch('http://localhost:3000/create-payment-intent', {
+            const response = await fetch('https://stripe-test-backend-n09g.onrender.com/create-payment-intent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ recaptchaToken: token })
             });
 
-            // Controlliamo se il server ha risposto correttamente
+
+            // Controlliamo se il server ha risposto con un errore
             if (!response.ok) {
-                // Se il server ha dato errore, leggiamo il testo invece di fare subito .json()
                 const errorText = await response.text();
                 throw new Error(errorText || "Errore dal server.");
             }
 
             const data = await response.json();
-
-
-            if (!response.ok) {
-                throw new Error(data.error || "Errore dal server.");
-            }
-
             const clientSecret = data.clientSecret;
             const userEmail = document.getElementById('email').value;
 
@@ -143,9 +138,10 @@ document.addEventListener('DOMContentLoaded', () => {
             captchaStep.style.display = 'none';
             form.style.display = 'block';
             errorMessageDiv.style.display = 'block';
-            errorMessageDiv.textContent = "Si è verificato un errore di connessione.";
+            errorMessageDiv.textContent = err.message || "Si è verificato un errore di connessione.";
         }
     };
+
 
 
     if (form) {
