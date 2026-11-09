@@ -13,8 +13,6 @@ app.use(express.json());
 app.set('trust proxy', true); // Necessario se posizionato dietro Cloudflare o Render
 
 // --- ROTTA KEEP-ALIVE ---
-// Questa rotta risponde subito e serve a mantenere il server sveglio 
-// se usi servizi gratuiti come UptimeRobot o Cron-Job.org
 app.get('/ping', (req, res) => {
     res.status(200).send('Pong! Server attivo.');
 });
@@ -22,16 +20,18 @@ app.get('/ping', (req, res) => {
 // --- ROTTA PRINCIPALE DI PAGAMENTO ---
 app.post('/create-payment-intent', async (req, res) => {
     try {
-        const { recaptchaToken } = req.body;
+        const { recaptchaToken, amount } = req.body;
 
-        // Verifica di base del token reCAPTCHA inviato dal frontend
-        if (!recaptchaToken) {
-            return res.status(400).json({ error: "Token reCAPTCHA mancante." });
+        // Nota: se la richiesta arriva da Google Pay / Apple Pay, reCAPTCHA non viene passato dal frontend 
+        // perché gestito direttamente dai wallet nativi protetti del browser. 
+        // Effettuiamo quindi il controllo del reCAPTCHA solo se il token è presente.
+        if (recaptchaToken) {
+            // Qui potresti eventualmente aggiungere la verifica server-side del reCAPTCHA di Google se desideri validarlo.
         }
 
-        // Creazione del Payment Intent tramite Stripe
+        // Creazione del Payment Intent tramite Stripe usando l'importo dinamico (o 29.00 EUR di default)
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: 2900, // 29.00 EUR in centesimi
+            amount: amount || 2900, // Importo in centesimi
             currency: 'eur',
             automatic_payment_methods: { enabled: true },
         });

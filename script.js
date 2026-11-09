@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof lucide !== 'undefined') lucide.createIcons();
 
     const stripe = Stripe('pk_test_51UVYHmL2BigJwV5Ohf6RMyRN1CQotyu6yUdEVwZgjtamGqWxuqAeVO9oHdzCaQJgWEEC44NIDymViyi6Uy7LquBn00kfgwmDC9');
+
     const elements = stripe.elements();
 
     const elementStyles = {
@@ -38,6 +39,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const currencyBtns = document.querySelectorAll('.currency-btn');
     const priceAmountEl = document.getElementById('priceAmount');
 
+    // Funzione per calcolare il prezzo finale in centesimi (necessario per Stripe)
+    function getCalculatedAmountInCents() {
+        let finalPrice = basePrice * currentRate;
+        if (discountPercent > 0) finalPrice = finalPrice * (1 - discountPercent / 100);
+        return Math.round(finalPrice * 100);
+    }
+
     function updatePriceDisplay() {
         let finalPrice = basePrice * currentRate;
         if (discountPercent > 0) finalPrice = finalPrice * (1 - discountPercent / 100);
@@ -45,6 +53,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const formatted = finalPrice.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         priceAmountEl.textContent = `${formatted} ${currentSymbol}`;
         btnText.textContent = `Paga ${formatted} ${currentSymbol}`;
+
+        // Aggiorna dinamicamente anche l'importo del Payment Request se attivo
+        if (window.paymentRequest) {
+            window.paymentRequest.update({
+                total: {
+                    label: 'Totale Ordine',
+                    amount: getCalculatedAmountInCents(),
+                }
+            });
+        }
     }
 
     currencyBtns.forEach(btn => {
@@ -80,22 +98,139 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Questa funzione viene chiamata automaticamente da Google reCAPTCHA quando l'utente supera il controllo anti-bot
-    // Questa funzione viene chiamata automaticamente da Google reCAPTCHA quando l'utente supera il controllo anti-bot
-    window.onCaptchaSuccess = async function (token) {
+    // --- CONFIGURAZIONE GOOGLE PAY / APPLE PAY (PAYMENT REQUEST) ---
+    const paymentRequest = stripe.paymentRequest({
+        country: 'IT',
+        currency: 'eur',
+        total: {
+            label: 'Totale Ordine',
+            amount: getCalculatedAmountInCents(),
+        },
+        requestPayerName: true,
+        requestPayerEmail: true,
+    });
+
+    // Rendiamo l'oggetto accessibile globalmente per l'update dei prezzi
+    window.paymentRequest = paymentRequest;
+
+    const googlePayButton = document.getElementById('google-pay-button');
+
+    // Verifica supporto browser per Wallet Digitali (Google Pay / Apple Pay)
+    paymentRequest.canMakePayment().then(function (result) {
+        if (googlePayButton) {
+            // Il pulsante compare sempre
+            googlePayButton.style.display = 'inline-flex';
+
+            if (result) {
+                // Se è supportato, il pulsante è attivo e cliccabile
+                googlePayButton.style.opacity = '1';
+                googlePayButton.style.cursor = 'pointer';
+                googlePayButton.disabled = false;
+            } else {
+                // Se NON è supportato (es. su Firefox), lo rendiamo semitrasoparente/grigetto e non cliccabile
+                googlePayButton.style.opacity = '0.4';
+                googlePayButton.style.cursor = 'not-allowed';
+                googlePayButton.disabled = true;
+            }
+        }
+    }).catch(err => {
+        console.error("Errore verifica canMakePayment:", err);
+        if (googlePayButton) {
+            googlePayButton.style.display = 'inline-flex';
+            googlePayButton.style.opacity = '0.4';
+            googlePayButton.style.cursor = 'not-allowed';
+            googlePayButton.disabled = true;
+        }
+    });
+
+
+
+    // Gestione click sul pulsante personalizzato Google Pay
+    if (googlePayButton) {
+        googlePayButton.addEventListener('click', function (e) {
+            e.preventDefault();
+            paymentRequest.show();
+        });
+    }
+
+    // Gestione dell'evento di pagamento andato a buon fine tramite Wallet
+    paymentRequest.on('paymentmethod', async function (ev) {
         try {
-            // Mostriamo un feedback visivo o lasciamo il caricamento
             errorMessageDiv.style.display = 'none';
 
-            // 1. Chiamiamo il nostro server.js inviando il token del reCAPTCHA
+            // 1. Richiediamo il clientSecret al backend passando anche l'importo calcolato
             const response = await fetch('https://stripe-test-backend-n09g.onrender.com/create-payment-intent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ recaptchaToken: token })
+                body: JSON.stringify({
+                    amount: getCalculatedAmountInCents() // Invia l'importo dinamico al server
+                })
             });
 
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || "Errore dal server.");
+            }
 
-            // Controlliamo se il server ha risposto con un errore
+            const data = await response.json();
+            const clientSecret = data.clientSecret;
+
+            // 2. Conferma il pagamento con il metodo di pagamento del wallet
+            const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
+                payment_method: ev.paymentMethod.id
+            }, { handleActions: false });
+
+            if (error) {
+                ev.complete('fail');
+                errorMessageDiv.style.display = 'block';
+                errorMessageDiv.textContent = error.message;
+            } else {
+                ev.complete('success');
+
+                // Se richiede azioni aggiuntive (es. autenticazione 3D Secure della carta nel wallet)
+                if (paymentIntent.status === 'requires_action') {
+                    const { error: actionError } = await stripe.confirmCardPayment(clientSecret);
+                    if (actionError) {
+                        errorMessageDiv.style.display = 'block';
+                        errorMessageDiv.textContent = actionError.message;
+                        return;
+                    }
+                }
+
+                // Successo totale
+                if (form) form.style.display = 'none';
+                if (googlePayButton) googlePayButton.style.display = 'none';
+                captchaStep.style.display = 'none';
+                successMessage.style.display = 'block';
+
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            }
+
+        } catch (err) {
+            console.error('Errore Wallet:', err);
+            ev.complete('fail');
+            errorMessageDiv.style.display = 'block';
+            errorMessageDiv.textContent = err.message || "Si è verificato un errore di connessione.";
+        }
+    });
+
+    // Questa funzione viene chiamata automaticamente da Google reCAPTCHA quando l'utente supera il controllo anti-bot (Pagamento con Carta Standard)
+    window.onCaptchaSuccess = async function (token) {
+        try {
+            errorMessageDiv.style.display = 'none';
+
+            // 1. Chiamiamo il nostro server.js inviando il token del reCAPTCHA e l'importo
+            const response = await fetch('https://stripe-test-backend-n09g.onrender.com/create-payment-intent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    recaptchaToken: token,
+                    amount: getCalculatedAmountInCents()
+                })
+            });
+
             if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(errorText || "Errore dal server.");
@@ -108,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 2. Chiediamo a Stripe di confermare il pagamento usando l'elemento sicuro della carta
             const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
                 payment_method: {
-                    card: cardNumber, // Questo è l'elemento Stripe della carta che hai creato prima!
+                    card: cardNumber,
                     billing_details: {
                         email: userEmail
                     }
@@ -117,14 +252,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 3. Gestiamo la risposta di Stripe
             if (error) {
-                // Se la carta viene rifiutata o c'è un errore nei dati
                 captchaStep.style.display = 'none';
-                form.style.display = 'block'; // Mostriamo di nuovo il form per correggere
+                form.style.display = 'block';
                 errorMessageDiv.style.display = 'block';
                 errorMessageDiv.textContent = error.message;
 
             } else if (paymentIntent && paymentIntent.status === 'succeeded') {
-                // Evviva! Pagamento andato a buon fine
                 captchaStep.style.display = 'none';
                 successMessage.style.display = 'block';
 
@@ -141,8 +274,6 @@ document.addEventListener('DOMContentLoaded', () => {
             errorMessageDiv.textContent = err.message || "Si è verificato un errore di connessione.";
         }
     };
-
-
 
     if (form) {
         form.addEventListener('submit', function (e) {
@@ -168,15 +299,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentX = mouseX;
     let currentY = mouseY;
 
-    // Rileva la posizione del mouse
     window.addEventListener('mousemove', (e) => {
         mouseX = e.clientX;
         mouseY = e.clientY;
     });
 
-    // Funzione di aggiornamento continuo per un movimento smorzato e naturale
     function animateGlow() {
-        // Velocità di inseguimento (più basso è il numero, più il movimento è morbido/ritardato)
         currentX += (mouseX - currentX) * 0.1;
         currentY += (mouseY - currentY) * 0.1;
 
